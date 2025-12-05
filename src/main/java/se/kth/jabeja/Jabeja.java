@@ -9,7 +9,6 @@ import java.util.List;
 import org.apache.log4j.Logger;
 
 import se.kth.jabeja.config.Config;
-import se.kth.jabeja.config.NodeSelectionPolicy;
 import se.kth.jabeja.io.FileIO;
 import se.kth.jabeja.rand.RandNoGenerator;
 
@@ -40,7 +39,7 @@ public class Jabeja {
         sampleAndSwap(id);
       }
 
-      // Apply simulated annealing (Task 2)
+      // Apply simulated annealing
       saCoolDown();
 
       report();
@@ -48,42 +47,31 @@ public class Jabeja {
   }
 
   /**
-   * Task 2: Geometric simulated annealing + restart mechanism
+   * Task 2: Geometric simulated annealing + restart
    */
   private void saCoolDown() {
-
-    // Geometric cooling: T = T * (1 - delta)
     T = T * (1 - config.getDelta());
 
-    // Restart mechanism: when T is too low, reset to initial
-    if (T < 0.1f) {
-      T = config.getTemperature(); // usually 1
-    }
+    if (T < 0.01)
+      T = config.getTemperature();
   }
 
-  /**
-   * Sample and swap algorithm for node p
-   */
   private void sampleAndSwap(int nodeId) {
-    Node partner = null;
     Node nodep = entireGraph.get(nodeId);
 
-    // Try LOCAL or HYBRID local sampling first
-    if (config.getNodeSelectionPolicy() == NodeSelectionPolicy.HYBRID
-        || config.getNodeSelectionPolicy() == NodeSelectionPolicy.LOCAL) {
+    Node partner = null;
 
-      partner = findPartner(nodeId, getNeighbors(nodep));
+    // 1) LOCAL SEARCH FIRST (mandatory for Hybrid)
+    Integer[] local = getNeighbors(nodep);
+    partner = findPartner(nodeId, local);
+
+    // 2) If LOCAL fails → GLOBAL search
+    if (partner == null) {
+      Integer[] randomSample = getSample(nodeId);
+      partner = findPartner(nodeId, randomSample);
     }
 
-    // If no partner found, try RANDOM or HYBRID random sampling
-    if (partner == null &&
-        (config.getNodeSelectionPolicy() == NodeSelectionPolicy.HYBRID
-            || config.getNodeSelectionPolicy() == NodeSelectionPolicy.RANDOM)) {
-
-      partner = findPartner(nodeId, getSample(nodeId));
-    }
-
-    // Perform swap if beneficial (partner != null)
+    // 3) Perform the swap
     if (partner != null) {
       int pColor = nodep.getColor();
       int qColor = partner.getColor();
@@ -96,56 +84,44 @@ public class Jabeja {
   }
 
   /**
-   * Task 1 + Task 2 + BONUS:
-   * Partner selection using JaBeJa’s utility + Metropolis probabilistic
-   * acceptance.
+   * Partner selection come in Algoritmo 1 del paper:
+   * new = d_p(qColor)^alpha + d_q(pColor)^alpha
+   * old = d_p(pColor)^alpha + d_q(qColor)^alpha
+   * accetto se (new * T > old) e new > bestUtility
+   * (T è la temperatura del simulated annealing).
    */
-  public Node findPartner(int nodeId, Integer[] nodes) {
+  public Node findPartner(int nodeId, Integer[] candidates) {
 
     Node nodep = entireGraph.get(nodeId);
     Node bestPartner = null;
 
-    double highestNewUtility = Double.NEGATIVE_INFINITY;
-    double alpha = config.getAlpha();
+    double bestUtility = 0;
+    double alpha = 2.0; // Fixed as per paper
 
-    for (Integer candidateId : nodes) {
-      Node nodeq = entireGraph.get(candidateId);
+    for (int qId : candidates) {
 
-      // Old state degrees
+      Node nodeq = entireGraph.get(qId);
+
+      // Compute old degrees
       int d_pp = getDegree(nodep, nodep.getColor());
       int d_qq = getDegree(nodeq, nodeq.getColor());
 
-      // New state degrees (if swapped)
+      // Degrees after hypothetical swap
       int d_pq = getDegree(nodep, nodeq.getColor());
       int d_qp = getDegree(nodeq, nodep.getColor());
 
-      // Compute utilities
       double oldUtility = Math.pow(d_pp, alpha) + Math.pow(d_qq, alpha);
+
       double newUtility = Math.pow(d_pq, alpha) + Math.pow(d_qp, alpha);
 
-      // BONUS: Metropolis acceptance function
-      boolean accept = false;
-      double delta = newUtility - oldUtility;
+      // -------- ACCEPTANCE RULE FROM PAPER --------
+      boolean accept = newUtility / Math.pow(oldUtility, 1.0 / T) > 1.0;
 
-      if (delta > 0) {
-        // Always accept improving moves
-        accept = true;
-      } else {
-        // Accept worsening moves with probability exp(delta / T)
-        double prob = Math.exp(delta / T); // delta < 0 => prob < 1
-        double r = Math.random();
-        if (r < prob) {
-          accept = true;
-        }
-      }
-
-      // Select best among accepted candidates
-      if (accept && newUtility > highestNewUtility) {
-        highestNewUtility = newUtility;
+      if (accept && newUtility > bestUtility) {
+        bestUtility = newUtility;
         bestPartner = nodeq;
       }
     }
-
     return bestPartner;
   }
 
@@ -164,7 +140,8 @@ public class Jabeja {
   }
 
   /**
-   * Uniform random sample of the graph
+   * Uniform random sample of the graph (global random view),
+   * come richiesto dal paper per la policy R.
    */
   private Integer[] getSample(int currentNodeId) {
     int count = config.getUniformRandomSampleSize();
@@ -180,6 +157,45 @@ public class Jabeja {
     }
 
     return rndIds.toArray(new Integer[0]);
+  }
+
+  /**
+   * Biased Random Sampling:
+   * Prefer candidates that share the same color as p.
+   * This helps reaching better partitions faster.
+   */
+  private Integer[] getBiasedSample(int currentNodeId, int color) {
+
+    List<Integer> sameColor = new ArrayList<>();
+    List<Integer> diffColor = new ArrayList<>();
+
+    for (int id : nodeIds) {
+      if (id == currentNodeId)
+        continue;
+      Node n = entireGraph.get(id);
+
+      if (n.getColor() == color)
+        sameColor.add(id);
+      else
+        diffColor.add(id);
+    }
+
+    // Shuffle both lists
+    java.util.Collections.shuffle(sameColor);
+    java.util.Collections.shuffle(diffColor);
+
+    int sampleSize = config.getUniformRandomSampleSize();
+    List<Integer> out = new ArrayList<>();
+
+    // Take 70% from same-color, 30% from others
+    int fromSame = Math.min((int) (sampleSize * 0.7), sameColor.size());
+    int fromDiff = sampleSize - fromSame;
+
+    out.addAll(sameColor.subList(0, fromSame));
+    if (fromDiff > 0 && diffColor.size() > 0)
+      out.addAll(diffColor.subList(0, Math.min(fromDiff, diffColor.size())));
+
+    return out.toArray(new Integer[0]);
   }
 
   /**
@@ -217,8 +233,9 @@ public class Jabeja {
       Node node = entireGraph.get(i);
       int nodeColor = node.getColor();
 
-      if (nodeColor != node.getInitColor())
+      if (nodeColor != node.getInitColor()) {
         migrations++;
+      }
 
       ArrayList<Integer> neighbors = node.getNeighbours();
       if (neighbors != null) {
