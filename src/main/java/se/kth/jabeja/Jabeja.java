@@ -29,7 +29,7 @@ public class Jabeja {
     this.round = 0;
     this.numberOfSwaps = 0;
     this.config = config;
-    this.T = config.getTemperature();
+    this.T = 2;
   }
 
   // -------------------------------------------------------------------
@@ -50,10 +50,12 @@ public class Jabeja {
    * Task 2: Geometric simulated annealing + restart
    */
   private void saCoolDown() {
-    T = T * (1 - config.getDelta());
-
-    if (T < 0.01)
-      T = config.getTemperature();
+    if (T > 1) {
+      T -= 0.003;
+    }
+    if (T < 1) {
+      T = 1;
+    }
   }
 
   private void sampleAndSwap(int nodeId) {
@@ -115,7 +117,7 @@ public class Jabeja {
       double newUtility = Math.pow(d_pq, alpha) + Math.pow(d_qp, alpha);
 
       // -------- ACCEPTANCE RULE FROM PAPER --------
-      boolean accept = newUtility / Math.pow(oldUtility, 1.0 / T) > 1.0;
+      boolean accept = newUtility * T > oldUtility;
 
       if (accept && newUtility > bestUtility) {
         bestUtility = newUtility;
